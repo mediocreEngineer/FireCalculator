@@ -62,15 +62,7 @@ const C = {
   muted:    '#6B7A8D', text:    '#DDE4ED',
 };
 
-// ─── Presets ──────────────────────────────────────────────────────────────────
-const PRESETS = {
-  "US → India":       { destCurrency:"₹", fxRate:83,  destReturn:0.10, destInflation:0.06, taxWindowName:"RNOR Window", baseHealthcare:3000,  usReturn:0.07 },
-  "US → Portugal":    { destCurrency:"€", fxRate:0.92, destReturn:0.07, destInflation:0.03, taxWindowName:"NHR Regime",  baseHealthcare:4000,  usReturn:0.07 },
-  "US → Thailand":    { destCurrency:"฿", fxRate:35,  destReturn:0.08, destInflation:0.03, taxWindowName:"LTR Visa",    baseHealthcare:2500,  usReturn:0.07 },
-  "US → Mexico":      { destCurrency:"$M",fxRate:17,  destReturn:0.08, destInflation:0.04, taxWindowName:"Tax Treaty",  baseHealthcare:3500,  usReturn:0.07 },
-  "UK → Spain":       { destCurrency:"€", fxRate:1.17, destReturn:0.07, destInflation:0.03, taxWindowName:"Beckham Law", baseHealthcare:3000,  usReturn:0.07 },
-  "Custom":           { destCurrency:"$", fxRate:1,    destReturn:0.08, destInflation:0.04, taxWindowName:"Tax Window",  baseHealthcare:3000,  usReturn:0.07 },
-};
+
 
 // ─── Capital Gains ────────────────────────────────────────────────────────────
 function calcCapGains(salePrice, mortgage, costBasis, sellCostsPct, exclusion, cgRate) {
@@ -264,9 +256,7 @@ const fmtK = v => v >= 1000 ? `$${(v/1000).toFixed(0)}k` : `$${Math.round(v)}`;
 
 // ─── Main App ─────────────────────────────────────────────────────────────────
 function App() {
-  const [tab,     setTab]     = useState('portfolio');
-  const [preset,  setPreset]  = useState('US → India');
-  const pre = PRESETS[preset];
+  const [tab, setTab] = useState('portfolio');
 
   // Identity
   const [currentAge,  setCurrentAge]  = useState(25);
@@ -314,17 +304,7 @@ function App() {
   const [homeBuyAge, setHomeBuyAge] = useState(25);
   const [homeBuyAmt, setHomeBuyAmt] = useState(50_000);
 
-  // Apply preset
-  const applyPreset = (name) => {
-    setPreset(name);
-    const p = PRESETS[name];
-    setHomeRet(p.usReturn);
-    setDestRet(p.destReturn);
-    setDestInfl(p.destInflation);
-    setBaseHC(p.baseHealthcare);
-  };
-
-  const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentAge]);
+const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentAge]);
 
   const capGains = useMemo(() =>
     calcCapGains(propSale, propMortgage, propBasis, sellCostsPct, cgExclusion, cgRate),
@@ -419,23 +399,6 @@ function App() {
       </div>
 
       <div style={{ maxWidth:1400, margin:'0 auto', padding:'20px 24px' }}>
-
-        {/* ── Preset row ────────────────────────────────────────── */}
-        <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:20, flexWrap:'wrap' }}>
-          <span style={{ fontSize:11, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em' }}>Quick Preset:</span>
-          {Object.keys(PRESETS).map(k => (
-            <button key={k} onClick={() => applyPreset(k)} style={{
-              background: preset===k ? C.gold+'20' : C.card,
-              border:`1px solid ${preset===k ? C.gold+'70' : C.border}`,
-              color: preset===k ? C.gold : C.muted, borderRadius:6,
-              padding:'5px 12px', fontSize:11, cursor:'pointer', fontFamily:"'Inter',sans-serif",
-              transition:'all 0.15s',
-            }}>{k}</button>
-          ))}
-          <span style={{ fontSize:11, color:C.muted, marginLeft:4 }}>
-            (presets set destination returns & inflation — review all sliders after switching)
-          </span>
-        </div>
 
         <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
 
@@ -558,7 +521,7 @@ function App() {
             </div>
 
             <SectionHead>Tax Optimization Window</SectionHead>
-            <Slider label={pre.taxWindowName + ' Duration'} value={taxWindowYrs} min={1} max={5} step={1}
+            <Slider label="Tax Window Duration" value={taxWindowYrs} min={1} max={5} step={1}
               fmt={v=>`${v} yrs (until ${yr(currentAge+v)})`} onChange={setTaxWindow}
               hint="Period after moving when foreign income may be taxed favorably (RNOR, NHR, etc.)" />
             <Slider label="Annual Retirement Conversion" value={rothConversionAmt} min={0} max={300_000} step={10_000}
@@ -848,7 +811,7 @@ function App() {
                     Tax Impact & Optimization
                   </h3>
                   <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
-                    First {taxWindowYrs} yrs = {pre.taxWindowName} (until {yr(currentAge+taxWindowYrs)}) · Gold bars = estimated tax savings from retirement conversion
+                    First {taxWindowYrs} yrs = Tax Window (until {yr(currentAge+taxWindowYrs)}) · Gold bars = estimated tax savings from retirement conversion
                   </p>
                   <ResponsiveContainer width="100%" height={250}>
                     <ComposedChart data={taxD} margin={{top:10,right:20,bottom:0,left:10}}>
@@ -864,7 +827,7 @@ function App() {
                   <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginTop:16}}>
                     {[
                       {title:'Tax Window',       value:`${taxWindowYrs} yrs`, col:C.gold,
-                        desc:`Your ${pre.taxWindowName} lasts until ${yr(currentAge+taxWindowYrs)}. During this period, foreign-sourced income may face lower or zero destination-country tax. Ideal window for large portfolio draws or retirement conversions.`},
+                        desc:`Your tax window lasts until ${yr(currentAge+taxWindowYrs)}. During this period, foreign-sourced income may face lower or zero destination-country tax. Ideal window for large portfolio draws or retirement conversions.`},
                       {title:'Retirement Conversion', value:`$${(rothConversionAmt/1e3).toFixed(0)}k/yr`, col:C.teal,
                         desc:`Convert traditional → tax-free retirement during tax window. Pay source-country tax now at lower effective rate; destination country may not tax it. Future growth is fully tax-free.`},
                       {title:'Home Sale CGT',    value:`$${(capGains.tax/1e3).toFixed(0)}k`, col:C.coral,
