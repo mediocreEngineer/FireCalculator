@@ -269,50 +269,50 @@ function App() {
   const pre = PRESETS[preset];
 
   // Identity
-  const [currentAge,  setCurrentAge]  = useState(38);
-  const [moveYear,    setMoveYear]     = useState(2026);
-  const [endAge,      setEndAge]       = useState(85);
+  const [currentAge,  setCurrentAge]  = useState(25);
+  const [moveYear,    setMoveYear]     = useState(2024);
+  const [endAge,      setEndAge]       = useState(70);
 
   // Assets
-  const [investments, setInvest]   = useState(1_600_000);
-  const [retirement,  setRetire]   = useState(1_000_000);
-  const [cash,        setCash]     = useState(150_000);
-  const [otherAssets, setOther]    = useState(55_000);
-  const [rothFrac,    setRothFrac] = useState(0.35);
+  const [investments, setInvest]   = useState(200_000);
+  const [retirement,  setRetire]   = useState(0);
+  const [cash,        setCash]     = useState(0);
+  const [otherAssets, setOther]    = useState(0);
+  const [rothFrac,    setRothFrac] = useState(0);
 
   // Property
-  const [propSale,    setPropSale]   = useState(1_350_000);
-  const [propMortgage,setPropMort]   = useState(450_000);
-  const [propBasis,   setPropBasis]  = useState(725_000);
-  const [sellCostsPct,setSellCosts]  = useState(0.03);
-  const [cgExclusion, setCgExcl]     = useState(500_000);
-  const [cgRate,      setCgRate]     = useState(0.238);
+  const [propSale,    setPropSale]   = useState(300_000);
+  const [propMortgage,setPropMort]   = useState(0);
+  const [propBasis,   setPropBasis]  = useState(100_000);
+  const [sellCostsPct,setSellCosts]  = useState(0.01);
+  const [cgExclusion, setCgExcl]     = useState(0);
+  const [cgRate,      setCgRate]     = useState(0.10);
 
   // Allocation
-  const [destAllocFrac,       setDestAlloc]   = useState(0.25);
-  const [homeProceedsDestFrac,setProcDest]    = useState(0.40);
+  const [destAllocFrac,       setDestAlloc]   = useState(0);
+  const [homeProceedsDestFrac,setProcDest]    = useState(0);
 
   // Returns
-  const [homeReturn,    setHomeRet]  = useState(pre.usReturn);
-  const [destReturn,    setDestRet]  = useState(pre.destReturn);
-  const [destInflation, setDestInfl] = useState(pre.destInflation);
+  const [homeReturn,    setHomeRet]  = useState(0.03);
+  const [destReturn,    setDestRet]  = useState(0.03);
+  const [destInflation, setDestInfl] = useState(0.02);
 
   // Lifestyle
-  const [baseExpenses,    setExpenses]    = useState(42_000);
-  const [consulting,      setConsult]     = useState(25_000);
-  const [consultingStop,  setConsultStop] = useState(55);
+  const [baseExpenses,    setExpenses]    = useState(15_000);
+  const [consulting,      setConsult]     = useState(0);
+  const [consultingStop,  setConsultStop] = useState(25);
 
   // Healthcare
-  const [baseHealthcare, setBaseHC]   = useState(pre.baseHealthcare);
-  const [healthMult,     setHealthMul]= useState(1.5);
+  const [baseHealthcare, setBaseHC]   = useState(1_000);
+  const [healthMult,     setHealthMul]= useState(1.0);
 
   // Tax
-  const [taxWindowYrs,      setTaxWindow] = useState(3);
-  const [rothConversionAmt, setRothConv]  = useState(150_000);
+  const [taxWindowYrs,      setTaxWindow] = useState(1);
+  const [rothConversionAmt, setRothConv]  = useState(0);
 
   // Destination home
-  const [homeBuyAge, setHomeBuyAge] = useState(currentAge + 2);
-  const [homeBuyAmt, setHomeBuyAmt] = useState(280_000);
+  const [homeBuyAge, setHomeBuyAge] = useState(25);
+  const [homeBuyAmt, setHomeBuyAmt] = useState(50_000);
 
   // Apply preset
   const applyPreset = (name) => {
