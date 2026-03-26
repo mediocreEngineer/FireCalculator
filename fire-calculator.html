@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Geo-FIRE Calculator — International Early Retirement Simulator</title>
+<meta name="description" content="Open-source FIRE calculator for people planning to retire early and relocate internationally. Models capital gains, cross-border tax optimization, healthcare escalation, and multi-currency portfolio growth."/>
+<script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.8.0/umd/Recharts.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500&family=Playfair+Display:wght@400;600;700&display=swap" rel="stylesheet"/>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 14px; }
+  body { background: #080C12; color: #DDE4ED; font-family: 'Inter', sans-serif; min-height: 100vh; }
+
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0D1117; }
+  ::-webkit-scrollbar-thumb { background: #2A3240; border-radius: 3px; }
+
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 3px; border-radius: 2px; background: #1E2530; outline: none; cursor: pointer; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #C9A84C; cursor: pointer; transition: transform 0.1s; }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.2); }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: #C9A84C; cursor: pointer; border: none; }
+
+  select { background: #0D1117; color: #DDE4ED; border: 1px solid #2A3240; border-radius: 6px; padding: 6px 10px; font-family: 'Inter', sans-serif; font-size: 12px; cursor: pointer; outline: none; }
+  select:focus { border-color: #C9A84C; }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 100px; font-size: 10px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
+  .badge-gold { background: #C9A84C18; color: #C9A84C; border: 1px solid #C9A84C30; }
+  .badge-teal { background: #4ECDC418; color: #4ECDC4; border: 1px solid #4ECDC430; }
+  .badge-coral { background: #FF6B6B18; color: #FF6B6B; border: 1px solid #FF6B6B30; }
+  .badge-sage  { background: #7DB87D18; color: #7DB87D; border: 1px solid #7DB87D30; }
+
+  a { color: #C9A84C; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .github-btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 16px; background: #161B22; border: 1px solid #2A3240; border-radius: 8px; font-size: 12px; font-weight: 500; color: #DDE4ED; cursor: pointer; transition: all 0.15s; }
+  .github-btn:hover { border-color: #C9A84C; color: #C9A84C; text-decoration: none; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useCallback } = React;
+const {
+  AreaChart, Area, BarChart, Bar, LineChart, Line,
+  ComposedChart, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer, ReferenceLine, Cell
+} = Recharts;
+
+// ─── Palette ──────────────────────────────────────────────────────────────────
+const C = {
+  gold:     '#C9A84C', goldL:   '#E8C66A',
+  teal:     '#4ECDC4', coral:   '#FF6B6B',
+  lavender: '#B89BE8', sage:    '#7DB87D',
+  bg:       '#080C12', card:    '#0F1419',
+  card2:    '#141A22', border:  '#1E2A38',
+  muted:    '#6B7A8D', text:    '#DDE4ED',
+};
+
+// ─── Presets ──────────────────────────────────────────────────────────────────
+const PRESETS = {
+  "US → India":       { destCurrency:"₹", fxRate:83,  destReturn:0.10, destInflation:0.06, taxWindowName:"RNOR Window", baseHealthcare:3000,  usReturn:0.07 },
+  "US → Portugal":    { destCurrency:"€", fxRate:0.92, destReturn:0.07, destInflation:0.03, taxWindowName:"NHR Regime",  baseHealthcare:4000,  usReturn:0.07 },
+  "US → Thailand":    { destCurrency:"฿", fxRate:35,  destReturn:0.08, destInflation:0.03, taxWindowName:"LTR Visa",    baseHealthcare:2500,  usReturn:0.07 },
+  "US → Mexico":      { destCurrency:"$M",fxRate:17,  destReturn:0.08, destInflation:0.04, taxWindowName:"Tax Treaty",  baseHealthcare:3500,  usReturn:0.07 },
+  "UK → Spain":       { destCurrency:"€", fxRate:1.17, destReturn:0.07, destInflation:0.03, taxWindowName:"Beckham Law", baseHealthcare:3000,  usReturn:0.07 },
+  "Custom":           { destCurrency:"$", fxRate:1,    destReturn:0.08, destInflation:0.04, taxWindowName:"Tax Window",  baseHealthcare:3000,  usReturn:0.07 },
+};
+
+// ─── Capital Gains ────────────────────────────────────────────────────────────
+function calcCapGains(salePrice, mortgage, costBasis, sellCostsPct, exclusion, cgRate) {
+  const sellCosts   = Math.round(salePrice * sellCostsPct);
+  const totalGain   = salePrice - costBasis - sellCosts;
+  const taxableGain = Math.max(0, totalGain - exclusion);
+  const tax         = Math.round(taxableGain * cgRate);
+  return {
+    sellCosts, totalGain: Math.round(totalGain),
+    taxableGain: Math.round(taxableGain), tax,
+    net: Math.round(salePrice - mortgage - sellCosts - tax),
+  };
+}
+
+// ─── Healthcare ───────────────────────────────────────────────────────────────
+function healthCost(age, startAge, infl, mult, base) {
+  const adj   = Math.pow(1 + infl, age - startAge);
+  const tier  = age < 50 ? 1 : age < 60 ? 2.5 : age < 70 ? 6 : 12;
+  const m     = age < 50 ? 1 : mult;
+  return Math.round(base * tier * m * adj);
+}
+
+// ─── Simulation ───────────────────────────────────────────────────────────────
+function simulate(p) {
+  const {
+    startAge, moveYear, endAge,
+    investments, retirement, cash, otherAssets, homeProceedsNet,
+    destAllocFrac, homeProceedsDestFrac,
+    homeReturn, destReturn, destInflation,
+    baseExpenses, baseHealthcare, healthMult,
+    consulting, consultingStop,
+    taxWindowYrs, rothConversionAmt,
+    homeBuyAge, homeBuyAmt,
+    rothFrac,
+  } = p;
+
+  let homeP = investments * (1 - destAllocFrac)
+            + homeProceedsNet * (1 - homeProceedsDestFrac)
+            + cash + otherAssets;
+  let destP = investments * destAllocFrac
+            + homeProceedsNet * homeProceedsDestFrac;
+  let roth  = retirement * rothFrac;
+  let trad  = retirement * (1 - rothFrac);
+
+  const rows = [];
+  for (let age = startAge; age <= endAge; age++) {
+    const yr      = age - startAge;
+    const year    = moveYear + yr;
+    const isWindow = yr < taxWindowYrs;
+
+    const lifestyleExp  = baseExpenses  * Math.pow(1 + destInflation, yr);
+    const healthcareExp = healthCost(age, startAge, destInflation, healthMult, baseHealthcare);
+    const expenses      = lifestyleExp + healthcareExp;
+
+    const consultIncome = age < consultingStop
+      ? consulting * Math.pow(1.03, Math.min(yr, 5)) : 0;
+    const netDraw    = Math.max(0, expenses - consultIncome);
+    const taxRate    = isWindow ? 0.18 : 0.26;
+    const grossDraw  = netDraw > 0 ? netDraw / (1 - taxRate) : 0;
+    const taxPaid    = grossDraw - netDraw;
+
+    let convTax = 0;
+    if (isWindow && trad > 0 && rothConversionAmt > 0) {
+      const conv = Math.min(rothConversionAmt, trad);
+      convTax = conv * 0.22;
+      trad -= conv; roth += conv; homeP -= convTax;
+    }
+
+    if (age === homeBuyAge) {
+      if (destP >= homeBuyAmt) destP -= homeBuyAmt;
+      else { homeP -= (homeBuyAmt - destP); destP = 0; }
+    }
+
+    let rem = grossDraw;
+    if (rem > 0 && homeP > 0) { const d = Math.min(rem, homeP); homeP -= d; rem -= d; }
+    if (rem > 0 && destP > 0) { const d = Math.min(rem, destP); destP -= d; rem -= d; }
+    if (rem > 0 && age >= 59.5) {
+      const avail = roth + trad, d = Math.min(rem, avail);
+      const fr = Math.min(d, roth); roth -= fr; trad -= Math.max(0, d - fr); rem -= d;
+    }
+
+    homeP = Math.max(0, homeP) * (1 + homeReturn);
+    destP = Math.max(0, destP) * (1 + destReturn);
+    roth  = roth * (1 + homeReturn);
+    trad  = trad * (1 + homeReturn);
+
+    const retTotal = roth + trad;
+    const total    = homeP + destP + retTotal;
+    rows.push({
+      age, year,
+      label:        `${age}·'${String(year).slice(2)}`,
+      expenses:     Math.round(expenses),
+      lifestyle:    Math.round(lifestyleExp),
+      healthcare:   Math.round(healthcareExp),
+      consulting:   Math.round(consultIncome),
+      netDraw:      Math.round(netDraw),
+      taxPaid:      Math.round(taxPaid + convTax),
+      homeP:        Math.round(homeP / 1e4) / 100,
+      destP:        Math.round(destP / 1e4) / 100,
+      retirement:   Math.round(retTotal / 1e4) / 100,
+      total:        Math.round(total / 1e4) / 100,
+      isWindow,
+      surplus:      Math.round(consultIncome - expenses),
+      drawPct:      total > 0 ? ((netDraw / total) * 100).toFixed(2) : "0",
+    });
+  }
+  return rows;
+}
+
+// ─── UI Atoms ─────────────────────────────────────────────────────────────────
+const SectionHead = ({ children }) => (
+  <div style={{ fontSize:10, color:C.gold+'BB', textTransform:'uppercase', letterSpacing:'0.1em',
+    fontWeight:600, margin:'18px 0 10px', borderLeft:`2px solid ${C.gold}40`, paddingLeft:8 }}>
+    {children}
+  </div>
+);
+
+const Slider = ({ label, value, min, max, step, onChange, fmt, hint, color }) => (
+  <div style={{ marginBottom:14 }}>
+    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginBottom:3 }}>
+      <span style={{ fontSize:10, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em' }}>{label}</span>
+      <span style={{ fontSize:12, fontFamily:"'JetBrains Mono',monospace", color: color || C.gold, fontWeight:500 }}>
+        {fmt ? fmt(value) : value}
+      </span>
+    </div>
+    {hint && <div style={{ fontSize:10, color:'#445060', marginBottom:4, lineHeight:1.4 }}>{hint}</div>}
+    <input type="range" min={min} max={max} step={step} value={value}
+      onChange={e => onChange(Number(e.target.value))} />
+    <div style={{ display:'flex', justifyContent:'space-between', marginTop:1 }}>
+      <span style={{ fontSize:9, color:'#2A3240', fontFamily:'monospace' }}>{fmt ? fmt(min) : min}</span>
+      <span style={{ fontSize:9, color:'#2A3240', fontFamily:'monospace' }}>{fmt ? fmt(max) : max}</span>
+    </div>
+  </div>
+);
+
+const KPICard = ({ label, value, sub, color, accent }) => (
+  <div style={{ background: accent ? `linear-gradient(135deg,${C.card},#111820)` : C.card,
+    border:`1px solid ${accent ? C.gold+'50' : C.border}`, borderRadius:10,
+    padding:'14px 16px', flex:1, minWidth:145 }}>
+    <div style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'0.1em', marginBottom:7 }}>{label}</div>
+    <div style={{ fontSize:20, fontFamily:"'Playfair Display',serif", color: color || C.gold, fontWeight:600, lineHeight:1 }}>{value}</div>
+    {sub && <div style={{ fontSize:10, color:C.muted, marginTop:5 }}>{sub}</div>}
+  </div>
+);
+
+const Tab = ({ label, active, onClick }) => (
+  <button onClick={onClick} style={{
+    background: active ? C.gold+'18' : 'transparent', border:'none', cursor:'pointer',
+    padding:'7px 14px', fontFamily:"'Inter',sans-serif", fontSize:12, fontWeight:500,
+    color: active ? C.gold : C.muted,
+    borderBottom: active ? `2px solid ${C.gold}` : '2px solid transparent',
+    transition:'all 0.15s', whiteSpace:'nowrap',
+  }}>{label}</button>
+);
+
+const InfoBox = ({ color, icon, title, children }) => (
+  <div style={{ background:`${color}0D`, border:`1px solid ${color}25`, borderRadius:7,
+    padding:'10px 12px', marginTop:10 }}>
+    <div style={{ fontSize:10, color, fontWeight:700, textTransform:'uppercase',
+      letterSpacing:'0.06em', marginBottom:4 }}>{icon} {title}</div>
+    <div style={{ fontSize:10, color:C.muted, lineHeight:1.5 }}>{children}</div>
+  </div>
+);
+
+const TT = ({ active, payload, label, moveYear, startAge }) => {
+  if (!active || !payload?.length) return null;
+  const year = moveYear + (Number(label) - startAge);
+  return (
+    <div style={{ background:'#0D1520', border:`1px solid ${C.border}`, borderRadius:8,
+      padding:'10px 13px', fontFamily:"'Inter',sans-serif", fontSize:11 }}>
+      <div style={{ color:C.gold, marginBottom:6, fontFamily:"'Playfair Display',serif",
+        fontSize:14, fontWeight:600 }}>Age {label} · {year}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ display:'flex', justifyContent:'space-between', gap:14, marginBottom:2 }}>
+          <span style={{ color:p.color }}>{p.name}</span>
+          <span style={{ color:C.text, fontFamily:"'JetBrains Mono',monospace" }}>
+            {typeof p.value === 'number'
+              ? p.value > 20
+                ? `$${(Math.round(p.value/1000)*1000).toLocaleString()}`
+                : `$${p.value.toFixed(2)}M`
+              : p.value}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const fmtM = v => `$${Math.abs(v).toFixed(2)}M`;
+const fmtK = v => v >= 1000 ? `$${(v/1000).toFixed(0)}k` : `$${Math.round(v)}`;
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+function App() {
+  const [tab,     setTab]     = useState('portfolio');
+  const [preset,  setPreset]  = useState('US → India');
+  const pre = PRESETS[preset];
+
+  // Identity
+  const [currentAge,  setCurrentAge]  = useState(38);
+  const [moveYear,    setMoveYear]     = useState(2026);
+  const [endAge,      setEndAge]       = useState(85);
+
+  // Assets
+  const [investments, setInvest]   = useState(1_600_000);
+  const [retirement,  setRetire]   = useState(1_000_000);
+  const [cash,        setCash]     = useState(150_000);
+  const [otherAssets, setOther]    = useState(55_000);
+  const [rothFrac,    setRothFrac] = useState(0.35);
+
+  // Property
+  const [propSale,    setPropSale]   = useState(1_350_000);
+  const [propMortgage,setPropMort]   = useState(450_000);
+  const [propBasis,   setPropBasis]  = useState(725_000);
+  const [sellCostsPct,setSellCosts]  = useState(0.03);
+  const [cgExclusion, setCgExcl]     = useState(500_000);
+  const [cgRate,      setCgRate]     = useState(0.238);
+
+  // Allocation
+  const [destAllocFrac,       setDestAlloc]   = useState(0.25);
+  const [homeProceedsDestFrac,setProcDest]    = useState(0.40);
+
+  // Returns
+  const [homeReturn,    setHomeRet]  = useState(pre.usReturn);
+  const [destReturn,    setDestRet]  = useState(pre.destReturn);
+  const [destInflation, setDestInfl] = useState(pre.destInflation);
+
+  // Lifestyle
+  const [baseExpenses,    setExpenses]    = useState(42_000);
+  const [consulting,      setConsult]     = useState(25_000);
+  const [consultingStop,  setConsultStop] = useState(55);
+
+  // Healthcare
+  const [baseHealthcare, setBaseHC]   = useState(pre.baseHealthcare);
+  const [healthMult,     setHealthMul]= useState(1.5);
+
+  // Tax
+  const [taxWindowYrs,      setTaxWindow] = useState(3);
+  const [rothConversionAmt, setRothConv]  = useState(150_000);
+
+  // Destination home
+  const [homeBuyAge, setHomeBuyAge] = useState(currentAge + 2);
+  const [homeBuyAmt, setHomeBuyAmt] = useState(280_000);
+
+  // Apply preset
+  const applyPreset = (name) => {
+    setPreset(name);
+    const p = PRESETS[name];
+    setHomeRet(p.usReturn);
+    setDestRet(p.destReturn);
+    setDestInfl(p.destInflation);
+    setBaseHC(p.baseHealthcare);
+  };
+
+  const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentAge]);
+
+  const capGains = useMemo(() =>
+    calcCapGains(propSale, propMortgage, propBasis, sellCostsPct, cgExclusion, cgRate),
+    [propSale, propMortgage, propBasis, sellCostsPct, cgExclusion, cgRate]
+  );
+
+  const params = {
+    startAge: currentAge, moveYear, endAge,
+    investments, retirement, cash, otherAssets,
+    homeProceedsNet: capGains.net,
+    destAllocFrac, homeProceedsDestFrac,
+    homeReturn, destReturn, destInflation,
+    baseExpenses, baseHealthcare, healthMult,
+    consulting, consultingStop,
+    taxWindowYrs, rothConversionAmt,
+    homeBuyAge, homeBuyAmt, rothFrac,
+  };
+
+  const data = useMemo(() => simulate(params), [JSON.stringify(params)]);
+
+  const scenarios = useMemo(() => ({
+    conservative: simulate({ ...params, homeReturn:0.05, destReturn:0.07, destInflation:0.08, consulting:5_000,  healthMult:2.5 }),
+    moderate:     simulate(params),
+    optimistic:   simulate({ ...params, homeReturn:0.09, destReturn:0.13, destInflation:0.03, consulting:40_000, healthMult:1.0 }),
+  }), [JSON.stringify(params)]);
+
+  const peakRow  = data.reduce((a,b) => b.total > a.total ? b : a, data[0]);
+  const at60     = data.find(d => d.age === 60) ?? {};
+  const at70     = data.find(d => d.age === 70) ?? {};
+  const depleted = data.find(d => d.total <= 0)?.age ?? null;
+  const totalTax = data.reduce((s,d) => s + d.taxPaid, 0);
+  const startTotal = investments + retirement + cash + otherAssets + capGains.net;
+
+  const allocData   = data.map(d => ({ age:d.age, 'Home Country':d.homeP, 'Destination':d.destP, 'Retirement':d.retirement }));
+  const cashflowD   = data.filter(d => d.age % 2 === 0).map(d => ({ age:d.age, Lifestyle:d.lifestyle, Healthcare:d.healthcare, Consulting:d.consulting, 'Portfolio Draw':d.netDraw, Tax:d.taxPaid }));
+  const healthD     = data.map(d => ({ age:d.age, Healthcare:d.healthcare, Lifestyle:d.lifestyle }));
+  const surplusD    = data.map(d => ({ age:d.age, value:d.consulting - d.expenses, pos:d.consulting >= d.expenses }));
+  const taxD        = data.filter(d => d.age <= 68).map(d => ({ age:d.age, 'Tax Paid':d.taxPaid, 'Window Saving':d.isWindow ? d.taxPaid * 0.35 : 0 }));
+  const scenD       = data.map((d,i) => ({ age:d.age, Conservative:scenarios.conservative[i]?.total??0, Moderate:scenarios.moderate[i]?.total??0, Optimistic:scenarios.optimistic[i]?.total??0 }));
+
+  const XAP = { stroke:C.muted, tick:{ fontSize:10 }, tickFormatter: v => `${v}·'${String(yr(v)).slice(2)}` };
+  const TT_ = (p) => <TT {...p} moveYear={moveYear} startAge={currentAge} />;
+
+  const GRID_STYLE = { strokeDasharray:"3 3", stroke:C.border, vertical:false };
+  const LEG_STYLE  = { fontSize:11, color:C.muted };
+
+  return (
+    <div style={{ background:C.bg, minHeight:'100vh', fontFamily:"'Inter',sans-serif", color:C.text }}>
+
+      {/* ── HERO HEADER ───────────────────────────────────────── */}
+      <div style={{ borderBottom:`1px solid ${C.border}`, padding:'28px 32px 24px' }}>
+        <div style={{ maxWidth:1400, margin:'0 auto' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', flexWrap:'wrap', gap:16 }}>
+            <div>
+              <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                <span style={{ fontSize:22, fontFamily:"'Playfair Display',serif", fontWeight:700,
+                  background:`linear-gradient(135deg,${C.goldL},${C.gold})`,
+                  WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
+                  Geo-FIRE Calculator
+                </span>
+                <span className="badge badge-gold">Open Source</span>
+              </div>
+              <p style={{ fontSize:13, color:C.muted, lineHeight:1.6, maxWidth:600 }}>
+                Model your international early retirement: capital gains, cross-border tax optimization,
+                healthcare escalation, and multi-portfolio growth across 40+ years.
+                No signup. No data collected. Runs entirely in your browser.
+              </p>
+              <div style={{ display:'flex', gap:8, marginTop:12, flexWrap:'wrap' }}>
+                <span className="badge badge-teal">Geo-Arbitrage FIRE</span>
+                <span className="badge badge-gold">Capital Gains Modeled</span>
+                <span className="badge badge-coral">Healthcare Escalation</span>
+                <span className="badge badge-sage">Tax Window Optimizer</span>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+              <a href="https://github.com/" target="_blank" className="github-btn">
+                <svg height="16" width="16" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                </svg>
+                Star on GitHub
+              </a>
+              <button className="github-btn" onClick={() => {
+                const blob = new Blob([document.documentElement.outerHTML], {type:'text/html'});
+                const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+                a.download = 'geo-fire-calculator.html'; a.click();
+              }}>
+                ↓ Download HTML
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth:1400, margin:'0 auto', padding:'20px 24px' }}>
+
+        {/* ── Preset row ────────────────────────────────────────── */}
+        <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:20, flexWrap:'wrap' }}>
+          <span style={{ fontSize:11, color:C.muted, textTransform:'uppercase', letterSpacing:'0.07em' }}>Quick Preset:</span>
+          {Object.keys(PRESETS).map(k => (
+            <button key={k} onClick={() => applyPreset(k)} style={{
+              background: preset===k ? C.gold+'20' : C.card,
+              border:`1px solid ${preset===k ? C.gold+'70' : C.border}`,
+              color: preset===k ? C.gold : C.muted, borderRadius:6,
+              padding:'5px 12px', fontSize:11, cursor:'pointer', fontFamily:"'Inter',sans-serif",
+              transition:'all 0.15s',
+            }}>{k}</button>
+          ))}
+          <span style={{ fontSize:11, color:C.muted, marginLeft:4 }}>
+            (presets set destination returns & inflation — review all sliders after switching)
+          </span>
+        </div>
+
+        <div style={{ display:'flex', gap:16, alignItems:'flex-start' }}>
+
+          {/* ── CONTROLS ──────────────────────────────────────── */}
+          <div style={{ width:272, flexShrink:0, background:C.card, border:`1px solid ${C.border}`,
+            borderRadius:12, padding:'16px 14px', position:'sticky', top:16,
+            maxHeight:'calc(100vh - 100px)', overflowY:'auto' }}>
+
+            <SectionHead>Your Profile</SectionHead>
+            <Slider label="Current Age" value={currentAge} min={25} max={55} step={1}
+              fmt={v=>`${v} yrs`} onChange={v => { setCurrentAge(v); setHomeBuyAge(v+2); }} />
+            <Slider label="Move Year" value={moveYear} min={2024} max={2035} step={1}
+              fmt={v=>`${v}`} onChange={setMoveYear} />
+            <Slider label="Simulate Until Age" value={endAge} min={70} max={95} step={1}
+              fmt={v=>`Age ${v}`} onChange={setEndAge} />
+
+            <SectionHead>Your Assets at Move Date</SectionHead>
+            <Slider label="Taxable Investments" value={investments} min={200_000} max={5_000_000} step={50_000}
+              fmt={v=>`$${(v/1e6).toFixed(2)}M`} onChange={setInvest}
+              hint="Stocks, ETFs, bonds — split by destination allocation slider" />
+            <Slider label="Retirement Accounts" value={retirement} min={0} max={3_000_000} step={50_000}
+              fmt={v=>`$${(v/1e6).toFixed(2)}M`} onChange={setRetire}
+              hint="401k, IRA, pension etc. No new contributions after move." />
+            <Slider label="Roth / Tax-Free Fraction" value={rothFrac} min={0} max={1} step={0.05}
+              fmt={v=>`${(v*100).toFixed(0)}% Roth / ${((1-v)*100).toFixed(0)}% Traditional`} onChange={setRothFrac} />
+            <Slider label="Cash & Emergency Fund" value={cash} min={0} max={500_000} step={10_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setCash} />
+            <Slider label="Other Assets (cars, etc.)" value={otherAssets} min={0} max={300_000} step={5_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setOther} />
+
+            <SectionHead>Home Sale · Capital Gains</SectionHead>
+            <Slider label="Expected Sale Price" value={propSale} min={300_000} max={3_000_000} step={25_000}
+              fmt={v=>`$${(v/1e6).toFixed(2)}M`} onChange={setPropSale} />
+            <Slider label="Mortgage Remaining" value={propMortgage} min={0} max={2_000_000} step={10_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setPropMort} />
+            <Slider label="Cost Basis (purchase price)" value={propBasis} min={100_000} max={2_000_000} step={25_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setPropBasis} />
+            <Slider label="Selling Costs (agent, fees)" value={sellCostsPct} min={0.01} max={0.08} step={0.005}
+              fmt={v=>`${(v*100).toFixed(1)}%`} onChange={setSellCosts} />
+            <Slider label="Primary Residence Exclusion" value={cgExclusion} min={0} max={500_000} step={50_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setCgExcl}
+              hint="US MFJ = $500k, Single = $250k, adjust for your country" />
+            <Slider label="Capital Gains Tax Rate" value={cgRate} min={0.10} max={0.35} step={0.005}
+              fmt={v=>`${(v*100).toFixed(1)}%`} onChange={setCgRate}
+              hint="US: 23.8% (20% LTCG + 3.8% NIIT). Adjust for your country." />
+
+            {/* CG breakdown */}
+            <div style={{ background:'#060A10', border:`1px solid ${C.border}`, borderRadius:8,
+              padding:'10px 12px', fontSize:11, marginBottom:4 }}>
+              <div style={{ fontSize:9, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:7 }}>
+                Cap Gains Breakdown
+              </div>
+              {[
+                ['Sale price',       `$${(propSale/1e3).toFixed(0)}k`,                                    C.text],
+                ['− Mortgage',       `-$${(propMortgage/1e3).toFixed(0)}k`,                              C.muted],
+                ['− Sell costs',     `-$${(capGains.sellCosts/1e3).toFixed(0)}k`,                        C.muted],
+                ['Total gain',       `$${(capGains.totalGain/1e3).toFixed(0)}k`,                          C.text],
+                ['Exclusion',        `-$${(cgExclusion/1e3).toFixed(0)}k`,                               C.sage],
+                ['Taxable gain',     `$${(capGains.taxableGain/1e3).toFixed(0)}k`,                        C.gold],
+                ['Cap gains tax',    `-$${(capGains.tax/1e3).toFixed(0)}k`,                              C.coral],
+                ['NET PROCEEDS',     `$${(capGains.net/1e3).toFixed(0)}k`,                               C.sage],
+              ].map(([l,v,c]) => (
+                <div key={l} style={{ display:'flex', justifyContent:'space-between', padding:'2.5px 0',
+                  borderBottom:`1px solid #141C28`, fontFamily:"'JetBrains Mono',monospace" }}>
+                  <span style={{ color:C.muted, fontSize:10 }}>{l}</span>
+                  <span style={{ color:c, fontWeight: l==='NET PROCEEDS'?600:400 }}>{v}</span>
+                </div>
+              ))}
+            </div>
+
+            <SectionHead>Allocate Home Sale Proceeds</SectionHead>
+            <Slider label="Proceeds → Destination Mkts" value={homeProceedsDestFrac} min={0} max={1} step={0.05}
+              fmt={v=>`${(v*100).toFixed(0)}% Dest / ${((1-v)*100).toFixed(0)}% Home`} onChange={setProcDest}
+              hint={`Destination: $${((capGains.net*homeProceedsDestFrac)/1e3).toFixed(0)}k  ·  Home: $${((capGains.net*(1-homeProceedsDestFrac))/1e3).toFixed(0)}k`} />
+
+            <SectionHead>Investments Allocation</SectionHead>
+            <Slider label="Investments → Dest Markets" value={destAllocFrac} min={0} max={0.8} step={0.05}
+              fmt={v=>`${(v*100).toFixed(0)}% Dest / ${((1-v)*100).toFixed(0)}% Home`} onChange={setDestAlloc}
+              hint="Separate from property proceeds allocation above" />
+
+            <SectionHead>Market Returns</SectionHead>
+            <Slider label="Home Country Return" value={homeReturn} min={0.03} max={0.14} step={0.005}
+              fmt={v=>`${(v*100).toFixed(1)}%`} onChange={setHomeRet} />
+            <Slider label="Destination Return" value={destReturn} min={0.03} max={0.16} step={0.005}
+              fmt={v=>`${(v*100).toFixed(1)}%`} onChange={setDestRet}
+              color={C.teal} />
+            <Slider label="Destination Inflation" value={destInflation} min={0.02} max={0.12} step={0.005}
+              fmt={v=>`${(v*100).toFixed(1)}%`} onChange={setDestInfl}
+              hint="Drives expense and healthcare cost growth" />
+
+            <SectionHead>Lifestyle in Destination</SectionHead>
+            <Slider label="Annual Lifestyle Expenses" value={baseExpenses} min={15_000} max={150_000} step={1_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k/yr`} onChange={setExpenses}
+              hint="Excludes healthcare. Grows with destination inflation." />
+            <Slider label="Consulting / Part-time Income" value={consulting} min={0} max={100_000} step={2_500}
+              fmt={v=>v>0?`$${(v/1000).toFixed(0)}k/yr`:'None'} onChange={setConsult}
+              hint="3% annual growth for first 5 yrs, then flat" />
+            <Slider label="Stop Work at Age" value={consultingStop} min={currentAge} max={72} step={1}
+              fmt={v=>`Age ${v} · ${yr(v)}`} onChange={setConsultStop} />
+
+            <SectionHead>Healthcare Trajectory</SectionHead>
+            <Slider label="Base Annual Healthcare" value={baseHealthcare} min={1_000} max={15_000} step={250}
+              fmt={v=>`$${(v/1000).toFixed(1)}k/yr`} onChange={setBaseHC}
+              hint="At move date (age-adjusted escalation applied automatically)" />
+            <Slider label="Health Trajectory Multiplier" value={healthMult} min={1.0} max={3.5} step={0.1}
+              fmt={v=>`${v.toFixed(1)}×`} onChange={setHealthMul}
+              color={C.coral}
+              hint="1.0 = stay healthy. 2.0 = some chronic conditions. 3.5 = significant illness from 60s." />
+            <div style={{ background:'#060A10', border:`1px solid ${C.border}`, borderRadius:7,
+              padding:'9px 11px', fontSize:11 }}>
+              {[currentAge, 50, 60, 70, 80].filter(a => a <= endAge).map(a => (
+                <div key={a} style={{ display:'flex', justifyContent:'space-between', padding:'2.5px 0',
+                  fontFamily:"'JetBrains Mono',monospace", fontSize:11 }}>
+                  <span style={{ color:C.muted }}>Age {a} · {yr(a)}</span>
+                  <span style={{ color: a>=70?C.coral:a>=60?C.gold:C.teal }}>
+                    {fmtK(healthCost(a, currentAge, destInflation, healthMult, baseHealthcare))}/yr
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <SectionHead>Tax Optimization Window</SectionHead>
+            <Slider label={pre.taxWindowName + ' Duration'} value={taxWindowYrs} min={1} max={5} step={1}
+              fmt={v=>`${v} yrs (until ${yr(currentAge+v)})`} onChange={setTaxWindow}
+              hint="Period after moving when foreign income may be taxed favorably (RNOR, NHR, etc.)" />
+            <Slider label="Annual Retirement Conversion" value={rothConversionAmt} min={0} max={300_000} step={10_000}
+              fmt={v=>v>0?`$${(v/1000).toFixed(0)}k/yr`:'Skip'} onChange={setRothConv}
+              hint="Convert traditional → Roth/tax-free during window. Saves future taxes." />
+
+            <SectionHead>Destination Home Purchase</SectionHead>
+            <Slider label="Buy at Age" value={homeBuyAge} min={currentAge} max={currentAge+15} step={1}
+              fmt={v=>`Age ${v} · ${yr(v)}`} onChange={setHomeBuyAge}
+              hint="Pulled from destination portfolio. Rent first to explore." />
+            <Slider label="Home Purchase Price" value={homeBuyAmt} min={50_000} max={1_000_000} step={10_000}
+              fmt={v=>`$${(v/1000).toFixed(0)}k`} onChange={setHomeBuyAmt} />
+
+            <InfoBox color={C.gold} icon="⚠" title="Retirement: No new contributions">
+              All retirement projections assume zero new contributions after the move date — only compounding from the current balance.
+            </InfoBox>
+
+            <div style={{ marginTop:16, padding:'10px 12px', background:`${C.coral}0D`,
+              border:`1px solid ${C.coral}25`, borderRadius:7 }}>
+              <div style={{ fontSize:10, color:C.coral, fontWeight:600, textTransform:'uppercase',
+                letterSpacing:'0.06em', marginBottom:4 }}>⚠ Not Financial Advice</div>
+              <div style={{ fontSize:10, color:C.muted, lineHeight:1.5 }}>
+                This tool is for educational modeling only. Consult a cross-border tax advisor and certified financial planner before making decisions.
+              </div>
+            </div>
+          </div>
+
+          {/* ── MAIN PANEL ────────────────────────────────────── */}
+          <div style={{ flex:1, minWidth:0 }}>
+
+            {/* Portfolio summary strip */}
+            <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:9,
+              padding:'11px 16px', marginBottom:13, display:'flex', gap:20, flexWrap:'wrap', alignItems:'center' }}>
+              <span style={{ fontSize:10, color:C.muted, textTransform:'uppercase', letterSpacing:'0.08em' }}>
+                {moveYear} Starting Portfolio:
+              </span>
+              {[
+                ['Investments', `$${(investments/1e6).toFixed(2)}M`, C.gold],
+                ['Retirement',  `$${(retirement/1e6).toFixed(2)}M`,  C.lavender],
+                ['Cash + Other',`$${((cash+otherAssets)/1e3).toFixed(0)}k`, C.teal],
+                ['Home Net',    `$${(capGains.net/1e3).toFixed(0)}k (after $${(capGains.tax/1e3).toFixed(0)}k CGT)`, C.sage],
+                ['TOTAL',       `$${(startTotal/1e6).toFixed(2)}M`, C.text],
+              ].map(([l,v,c]) => (
+                <span key={l} style={{ fontSize:12, fontFamily:"'JetBrains Mono',monospace" }}>
+                  <span style={{ color:C.muted }}>{l} </span>
+                  <span style={{ color:c, fontWeight:500 }}>{v}</span>
+                </span>
+              ))}
+            </div>
+
+            {/* KPIs */}
+            <div style={{ display:'flex', gap:10, marginBottom:14, flexWrap:'wrap' }}>
+              <KPICard label="Peak Net Worth" value={fmtM(peakRow.total)} sub={`Age ${peakRow.age} · ${peakRow.year}`} accent />
+              <KPICard label={`Age 60 · ${moveYear + (60-currentAge)}`} value={fmtM(at60.total??0)} sub="Projected net worth" color={C.teal} />
+              <KPICard label={`Age 70 · ${moveYear + (70-currentAge)}`} value={fmtM(at70.total??0)} sub="Projected net worth" color={C.lavender} />
+              <KPICard label="Portfolio Depleted" value={depleted ? `Age ${depleted}` : 'Never'} sub="At current settings" color={depleted ? C.coral : C.sage} />
+              <KPICard label="Lifetime Tax" value={`$${(totalTax/1e6).toFixed(2)}M`} sub={`Incl. tax window optimization`} color={C.muted} />
+            </div>
+
+            {/* Tab bar */}
+            <div style={{ display:'flex', gap:2, marginBottom:14, background:C.card,
+              border:`1px solid ${C.border}`, borderRadius:8, padding:3, width:'fit-content',
+              overflowX:'auto' }}>
+              {[['portfolio','Portfolio'],['cashflow','Cashflow'],['healthcare','Healthcare'],
+                ['allocation','Allocation'],['tax','Tax'],['scenarios','Scenarios']].map(([id,lbl]) => (
+                <Tab key={id} label={lbl} active={tab===id} onClick={() => setTab(id)} />
+              ))}
+            </div>
+
+            <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:12, padding:'20px 18px' }}>
+
+              {/* PORTFOLIO */}
+              {tab==='portfolio' && (
+                <div>
+                  <h3 style={{ fontFamily:"'Playfair Display',serif", fontSize:22, margin:'0 0 4px' }}>
+                    Total Portfolio Growth
+                  </h3>
+                  <p style={{ fontSize:12, color:C.muted, margin:'0 0 16px' }}>
+                    Stacked: Home Country + Destination + Retirement · Retirement accessible penalty-free at 59½
+                  </p>
+                  <ResponsiveContainer width="100%" height={310}>
+                    <AreaChart data={allocData} margin={{ top:10,right:20,bottom:0,left:10 }}>
+                      <defs>
+                        {[['gH',C.gold],['gD',C.teal],['gR',C.lavender]].map(([id,c])=>(
+                          <linearGradient key={id} id={id} x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%"  stopColor={c} stopOpacity={0.5}/>
+                            <stop offset="95%" stopColor={c} stopOpacity={0.04}/>
+                          </linearGradient>
+                        ))}
+                      </defs>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${v}M`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <ReferenceLine x={currentAge+taxWindowYrs} stroke={C.gold+'60'} strokeDasharray="5 3" label={{value:'Tax window end',fill:C.gold+'90',fontSize:10}}/>
+                      <ReferenceLine x={homeBuyAge}              stroke={C.teal+'70'} strokeDasharray="4 4" label={{value:'Buy home',fill:C.teal+'99',fontSize:10}}/>
+                      <ReferenceLine x={59}                      stroke={C.lavender+'70'} strokeDasharray="4 4" label={{value:'59½',fill:C.lavender+'99',fontSize:10}}/>
+                      <Area type="monotone" dataKey="Home Country" stackId="1" stroke={C.gold}     fill="url(#gH)" strokeWidth={2}/>
+                      <Area type="monotone" dataKey="Destination"  stackId="1" stroke={C.teal}     fill="url(#gD)" strokeWidth={2}/>
+                      <Area type="monotone" dataKey="Retirement"   stackId="1" stroke={C.lavender} fill="url(#gR)" strokeWidth={2}/>
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  <div style={{marginTop:22}}>
+                    <h4 style={{fontFamily:"'Playfair Display',serif",fontSize:18,margin:'0 0 10px'}}>
+                      Effective Withdrawal Rate
+                    </h4>
+                    <ResponsiveContainer width="100%" height={130}>
+                      <LineChart data={data.slice(0, Math.min(35, data.length))} margin={{top:0,right:20,bottom:0,left:10}}>
+                        <CartesianGrid {...GRID_STYLE}/>
+                        <XAxis dataKey="age" {...XAP}/>
+                        <YAxis stroke={C.muted} tick={{fontSize:10}} tickFormatter={v=>`${v}%`}/>
+                        <Tooltip formatter={v=>[`${v}%`,'WR']} labelFormatter={v=>`Age ${v} · ${yr(v)}`} contentStyle={{background:'#0D1520',border:`1px solid ${C.border}`}}/>
+                        <ReferenceLine y={4} stroke={C.coral+'70'} strokeDasharray="4 2" label={{value:'4% rule',fill:C.coral+'80',fontSize:9}}/>
+                        <Line type="monotone" dataKey="drawPct" name="Withdrawal Rate" stroke={C.gold} strokeWidth={2} dot={false}/>
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {/* CASHFLOW */}
+              {tab==='cashflow' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>Annual Cashflow</h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    Bars = funding sources · Lines = expense components · All destination-inflation adjusted · Every 2 years
+                  </p>
+                  <ResponsiveContainer width="100%" height={300}>
+                    <ComposedChart data={cashflowD} margin={{top:10,right:20,bottom:0,left:10}}>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${(v/1000).toFixed(0)}k`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <ReferenceLine x={consultingStop} stroke={C.coral+'70'} strokeDasharray="4 2" label={{value:'Work stops',fill:C.coral+'80',fontSize:10}}/>
+                      <Bar dataKey="Consulting"    fill={C.teal}     fillOpacity={0.8} stackId="src"/>
+                      <Bar dataKey="Portfolio Draw" fill={C.gold}    fillOpacity={0.7} stackId="src"/>
+                      <Bar dataKey="Tax"           fill={C.lavender} fillOpacity={0.5} stackId="src"/>
+                      <Line type="monotone" dataKey="Lifestyle"  stroke={C.gold}  strokeWidth={2} dot={false} strokeDasharray="5 2"/>
+                      <Line type="monotone" dataKey="Healthcare" stroke={C.coral} strokeWidth={2} dot={false}/>
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{marginTop:22}}>
+                    <h4 style={{fontFamily:"'Playfair Display',serif",fontSize:18,margin:'0 0 5px'}}>
+                      Consulting Surplus vs Total Expenses
+                    </h4>
+                    <p style={{fontSize:11,color:C.muted,margin:'0 0 10px'}}>
+                      Teal = part-time work alone covers all costs · Red = must draw from portfolio
+                    </p>
+                    <ResponsiveContainer width="100%" height={140}>
+                      <BarChart data={surplusD.slice(0, Math.min(35, surplusD.length))} margin={{top:0,right:20,bottom:0,left:10}}>
+                        <CartesianGrid {...GRID_STYLE}/>
+                        <XAxis dataKey="age" {...XAP}/>
+                        <YAxis stroke={C.muted} tick={{fontSize:10}} tickFormatter={v=>`$${(v/1000).toFixed(0)}k`}/>
+                        <Tooltip formatter={(v)=>[fmtK(Math.abs(v)),v>=0?'Surplus':'Deficit']} labelFormatter={v=>`Age ${v} · ${yr(v)}`} contentStyle={{background:'#0D1520',border:`1px solid ${C.border}`}}/>
+                        <ReferenceLine y={0} stroke={C.border}/>
+                        <Bar dataKey="value" radius={[3,3,0,0]}>
+                          {surplusD.slice(0, Math.min(35, surplusD.length)).map((d,i)=>(
+                            <Cell key={i} fill={d.pos ? C.teal : C.coral} fillOpacity={0.8}/>
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {/* HEALTHCARE */}
+              {tab==='healthcare' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>
+                    Healthcare Cost Trajectory
+                  </h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    Stepped model: low premiums in 40s → rising chronic management in 60s → multi-condition in 70s+
+                    · Adjust the Health Multiplier for your risk profile
+                  </p>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <AreaChart data={healthD} margin={{top:10,right:20,bottom:0,left:10}}>
+                      <defs>
+                        <linearGradient id="hg" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%"  stopColor={C.coral} stopOpacity={0.55}/>
+                          <stop offset="95%" stopColor={C.coral} stopOpacity={0.04}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${(v/1000).toFixed(0)}k`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <ReferenceLine x={60} stroke={C.coral+'60'} strokeDasharray="4 3" label={{value:'Chronic risk onset',fill:C.coral+'80',fontSize:10}}/>
+                      <Area type="monotone" dataKey="Healthcare" stroke={C.coral} fill="url(#hg)" strokeWidth={2.5}/>
+                      <Line type="monotone" dataKey="Lifestyle"  stroke={C.gold}  strokeWidth={1.5} dot={false} strokeDasharray="5 3"/>
+                    </AreaChart>
+                  </ResponsiveContainer>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginTop:16}}>
+                    {[
+                      {ageRange:'Move–49', col:C.teal, cost:fmtK(healthCost(currentAge+5,currentAge,destInflation,healthMult,baseHealthcare)),
+                        notes:['Comprehensive private policy in destination','International coverage for home country visits','Near-zero out-of-pocket if healthy','Research AARP-equivalent plans in your destination']},
+                      {ageRange:'50–59',   col:C.gold, cost:fmtK(healthCost(55,currentAge,destInflation,healthMult,baseHealthcare)),
+                        notes:['Higher premiums, begin routine screening','Annual executive health checkup recommended','Add super top-up / supplemental policy','Maintain emergency medical repatriation coverage']},
+                      {ageRange:'60–69',   col:C.lavender, cost:fmtK(healthCost(65,currentAge,destInflation,healthMult,baseHealthcare)),
+                        notes:['Chronic management likely begins: BP, diabetes','Specialist visits become routine','Use internationally accredited private hospitals','Begin long-term care planning']},
+                      {ageRange:'70+',     col:C.coral, cost:fmtK(healthCost(75,currentAge,destInflation,healthMult,baseHealthcare)),
+                        notes:['Multi-condition management expected','Home nursing/aide may be needed','Many destinations offer far lower costs vs. US','Your portfolio absorbs even worst-case scenarios']},
+                    ].map(({ageRange,col,cost,notes})=>(
+                      <div key={ageRange} style={{background:'#060A10',border:`1px solid ${C.border}`,borderRadius:8,padding:'12px 14px'}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:7}}>
+                          <span style={{color:col,fontFamily:"'Playfair Display',serif",fontSize:15,fontWeight:600}}>Age {ageRange}</span>
+                          <span style={{color:col,fontFamily:"'JetBrains Mono',monospace",fontSize:12}}>{cost}/yr</span>
+                        </div>
+                        {notes.map((n,i)=>(
+                          <div key={i} style={{fontSize:11,color:C.muted,paddingLeft:9,borderLeft:`2px solid ${col}30`,marginBottom:4,lineHeight:1.4}}>{n}</div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* ALLOCATION */}
+              {tab==='allocation' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>
+                    Home vs Destination Portfolio
+                  </h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    Each sleeve grows at its own return rate. Home country hedges currency risk; destination reduces conversion costs.
+                  </p>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={allocData} margin={{top:10,right:20,bottom:0,left:10}}>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${v}M`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <Line type="monotone" dataKey="Home Country" stroke={C.gold}     strokeWidth={2.5} dot={false}/>
+                      <Line type="monotone" dataKey="Destination"  stroke={C.teal}     strokeWidth={2.5} dot={false}/>
+                      <Line type="monotone" dataKey="Retirement"   stroke={C.lavender} strokeWidth={2}   strokeDasharray="5 3" dot={false}/>
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <div style={{background:'#060A10',border:`1px solid ${C.border}`,borderRadius:8,padding:'14px 16px',marginTop:16}}>
+                    <div style={{fontSize:10,color:C.muted,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:12}}>
+                      Starting Allocation (Year {moveYear})
+                    </div>
+                    <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14}}>
+                      {[
+                        {label:'Home Country',col:C.gold,items:[
+                          `Investments: $${((investments*(1-destAllocFrac))/1e3).toFixed(0)}k`,
+                          `Prop proceeds: $${((capGains.net*(1-homeProceedsDestFrac))/1e3).toFixed(0)}k`,
+                          `Cash + other: $${((cash+otherAssets)/1e3).toFixed(0)}k`,
+                          'Home currency — no conversion friction',
+                          'Hedges destination currency depreciation',
+                        ]},
+                        {label:'Destination',col:C.teal,items:[
+                          `Investments: $${((investments*destAllocFrac)/1e3).toFixed(0)}k`,
+                          `Prop proceeds: $${((capGains.net*homeProceedsDestFrac)/1e3).toFixed(0)}k`,
+                          `− Home purchase at ${homeBuyAge}: −$${(homeBuyAmt/1e3).toFixed(0)}k`,
+                          'Index funds in destination currency',
+                          'No FX conversion for daily expenses',
+                        ]},
+                        {label:'Retirement Accts',col:C.lavender,items:[
+                          `Total: $${(retirement/1e3).toFixed(0)}k`,
+                          `Tax-free: $${(retirement*rothFrac/1e3).toFixed(0)}k`,
+                          `Traditional: $${(retirement*(1-rothFrac)/1e3).toFixed(0)}k`,
+                          'Zero new contributions after move',
+                          'Penalty-free access from age 59½',
+                        ]},
+                      ].map(({label,col,items})=>(
+                        <div key={label}>
+                          <div style={{color:col,fontFamily:"'Playfair Display',serif",fontSize:14,fontWeight:600,marginBottom:8}}>{label}</div>
+                          {items.map((it,i)=>(
+                            <div key={i} style={{fontSize:11,color:C.muted,paddingLeft:9,borderLeft:`2px solid ${col}30`,marginBottom:4,lineHeight:1.4}}>{it}</div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAX */}
+              {tab==='tax' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>
+                    Tax Impact & Optimization
+                  </h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    First {taxWindowYrs} yrs = {pre.taxWindowName} (until {yr(currentAge+taxWindowYrs)}) · Gold bars = estimated tax savings from retirement conversion
+                  </p>
+                  <ResponsiveContainer width="100%" height={250}>
+                    <ComposedChart data={taxD} margin={{top:10,right:20,bottom:0,left:10}}>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${(v/1000).toFixed(0)}k`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <Bar dataKey="Tax Paid"      fill={C.coral}    fillOpacity={0.7} radius={[3,3,0,0]}/>
+                      <Bar dataKey="Window Saving" fill={C.gold}     fillOpacity={0.6} radius={[3,3,0,0]}/>
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginTop:16}}>
+                    {[
+                      {title:'Tax Window',       value:`${taxWindowYrs} yrs`, col:C.gold,
+                        desc:`Your ${pre.taxWindowName} lasts until ${yr(currentAge+taxWindowYrs)}. During this period, foreign-sourced income may face lower or zero destination-country tax. Ideal window for large portfolio draws or retirement conversions.`},
+                      {title:'Retirement Conversion', value:`$${(rothConversionAmt/1e3).toFixed(0)}k/yr`, col:C.teal,
+                        desc:`Convert traditional → tax-free retirement during tax window. Pay source-country tax now at lower effective rate; destination country may not tax it. Future growth is fully tax-free.`},
+                      {title:'Home Sale CGT',    value:`$${(capGains.tax/1e3).toFixed(0)}k`, col:C.coral,
+                        desc:`Applied a $${(cgExclusion/1e3).toFixed(0)}k exclusion to the $${(capGains.totalGain/1e3).toFixed(0)}k gain, leaving $${(capGains.taxableGain/1e3).toFixed(0)}k taxable at ${(cgRate*100).toFixed(1)}%. This is a one-time cost and is already deducted from your starting portfolio.`},
+                      {title:'Tax Treaty',       value:'Review needed', col:C.sage,
+                        desc:`Most country pairs have tax treaties that reduce withholding on dividends and interest. File the appropriate treaty form with your broker (e.g. W-8BEN for US accounts) to access reduced rates.`},
+                      {title:'Estate Planning',  value:'Act early', col:C.coral,
+                        desc:`Non-resident alien rules may apply lower estate tax thresholds on home-country assets. As balances grow, a cross-border estate plan (trusts, account re-titling) is worth the one-time legal cost.`},
+                      {title:'Asset Reporting',  value:'Annual', col:C.lavender,
+                        desc:`Most countries require annual disclosure of foreign assets above a threshold. Non-disclosure can result in severe penalties. Work with a cross-border CPA to stay compliant in both countries.`},
+                    ].map(({title,value,col,desc})=>(
+                      <div key={title} style={{background:'#060A10',border:`1px solid ${C.border}`,borderRadius:8,padding:'11px 13px'}}>
+                        <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:5}}>
+                          <span style={{fontSize:10,color:C.muted,textTransform:'uppercase',letterSpacing:'0.05em'}}>{title}</span>
+                          <span style={{fontSize:12,color:col,fontFamily:"'JetBrains Mono',monospace"}}>{value}</span>
+                        </div>
+                        <p style={{fontSize:11,color:C.muted,margin:0,lineHeight:1.5}}>{desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* SCENARIOS */}
+              {tab==='scenarios' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>
+                    Scenario Comparison
+                  </h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    Conservative: low returns + high inflation + high healthcare + minimal work income.
+                    Optimistic: inverse. All other parameters fixed at current settings.
+                  </p>
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={scenD} margin={{top:10,right:20,bottom:0,left:10}}>
+                      <CartesianGrid {...GRID_STYLE}/>
+                      <XAxis dataKey="age" {...XAP}/>
+                      <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${v}M`}/>
+                      <Tooltip content={TT_}/>
+                      <Legend wrapperStyle={LEG_STYLE}/>
+                      <Line type="monotone" dataKey="Conservative" stroke={C.coral}    strokeWidth={2}   dot={false} strokeDasharray="5 3"/>
+                      <Line type="monotone" dataKey="Moderate"     stroke={C.gold}     strokeWidth={2.5} dot={false}/>
+                      <Line type="monotone" dataKey="Optimistic"   stroke={C.teal}     strokeWidth={2}   dot={false}/>
+                    </LineChart>
+                  </ResponsiveContainer>
+                  <table style={{width:'100%',borderCollapse:'collapse',marginTop:18,fontFamily:"'Inter',sans-serif"}}>
+                    <thead>
+                      <tr>{['Assumption','Conservative','Moderate','Optimistic'].map((h,i)=>(
+                        <th key={h} style={{textAlign:i===0?'left':'right',padding:'7px 11px',fontSize:10,
+                          color:[C.muted,C.coral,C.gold,C.teal][i],borderBottom:`1px solid ${C.border}`,
+                          textTransform:'uppercase',letterSpacing:'0.05em'}}>{h}</th>
+                      ))}</tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        {l:'Home Return',    v:['5.0%',  `${(homeReturn*100).toFixed(1)}%`,  '9.0%']},
+                        {l:'Dest Return',    v:['7.0%',  `${(destReturn*100).toFixed(1)}%`,  '13.0%']},
+                        {l:'Dest Inflation', v:['8.0%',  `${(destInflation*100).toFixed(1)}%`,'3.0%']},
+                        {l:'Work Income',    v:['$5k/yr',`$${(consulting/1e3).toFixed(0)}k/yr`,'$40k/yr']},
+                        {l:'Health Mult',    v:['2.5×',  `${healthMult.toFixed(1)}×`,         '1.0×']},
+                        {l:`Net Worth @ 60`, v:[fmtM(scenarios.conservative.find(d=>d.age===60)?.total??0), fmtM(at60.total??0), fmtM(scenarios.optimistic.find(d=>d.age===60)?.total??0)], bold:true},
+                        {l:`Net Worth @ 70`, v:[fmtM(scenarios.conservative.find(d=>d.age===70)?.total??0), fmtM(at70.total??0), fmtM(scenarios.optimistic.find(d=>d.age===70)?.total??0)], bold:true},
+                        {l:'Depleted at',    v:[
+                          scenarios.conservative.find(d=>d.total<=0)?.age ? `Age ${scenarios.conservative.find(d=>d.total<=0).age}` : 'Never',
+                          depleted ? `Age ${depleted}` : 'Never',
+                          scenarios.optimistic.find(d=>d.total<=0)?.age ? `Age ${scenarios.optimistic.find(d=>d.total<=0).age}` : 'Never',
+                        ], bold:true},
+                      ].map(({l,v,bold})=>(
+                        <tr key={l} style={{borderBottom:`1px solid ${C.border}20`}}>
+                          <td style={{padding:'7px 11px',fontSize:12,color:C.muted}}>{l}</td>
+                          {v.map((val,i)=>(
+                            <td key={i} style={{padding:'7px 11px',textAlign:'right',
+                              fontSize:bold?14:12,
+                              fontFamily:bold?"'Playfair Display',serif":"'JetBrains Mono',monospace",
+                              fontWeight:bold?600:400,
+                              color:bold?[C.coral,C.gold,C.teal][i]:C.text}}>{val}</td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+            </div>
+
+            {/* Insight strip */}
+            <div style={{marginTop:12,padding:'12px 16px',background:`linear-gradient(135deg,#111A0A,${C.bg})`,
+              border:`1px solid ${C.gold}28`,borderRadius:9,display:'flex',gap:10}}>
+              <span style={{fontSize:14}}>💡</span>
+              <span style={{fontSize:12,color:C.muted,lineHeight:1.7}}>
+                <strong style={{color:C.gold}}>Projection:</strong>{' '}
+                Moving in {moveYear} at age {currentAge} with{' '}
+                <strong style={{color:C.text}}>${(startTotal/1e6).toFixed(2)}M</strong> (including{' '}
+                <strong style={{color:C.sage}}>${(capGains.net/1e3).toFixed(0)}k</strong> net from home sale after{' '}
+                <strong style={{color:C.coral}}>${(capGains.tax/1e3).toFixed(0)}k</strong> cap gains tax).
+                At ${(baseExpenses/1e3).toFixed(0)}k/yr lifestyle expenses, effective withdrawal rate is{' '}
+                <strong style={{color:C.teal}}>{data[2]?.drawPct ?? '~'}%</strong>.
+                Retirement accounts grow to{' '}
+                <strong style={{color:C.lavender}}>${((retirement*Math.pow(1+homeReturn,22))/1e6).toFixed(1)}M</strong>{' '}
+                by age 60 with zero new contributions.{' '}
+                {!depleted
+                  ? <span>Under all three scenarios, the portfolio is never depleted. <strong style={{color:C.sage}}>You are financially free.</strong></span>
+                  : <span>Portfolio depletes at age <strong style={{color:C.coral}}>{depleted}</strong> under current settings — consider adjusting expenses or returns.</span>
+                }
+              </span>
+            </div>
+
+            {/* Footer */}
+            <div style={{marginTop:20,paddingTop:16,borderTop:`1px solid ${C.border}`,
+              display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:10}}>
+              <span style={{fontSize:11,color:C.muted}}>
+                Geo-FIRE Calculator · Open Source · MIT License ·{' '}
+                <a href="https://github.com/">Contribute on GitHub</a>
+              </span>
+              <span style={{fontSize:11,color:C.muted}}>
+                Not financial advice. All projections are hypothetical. Consult a qualified advisor.
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App/>, document.getElementById('root'));
+</script>
+</body>
+</html>
