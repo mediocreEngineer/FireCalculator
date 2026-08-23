@@ -86,7 +86,7 @@ function healthCost(age, startAge, infl, mult, base) {
 }
 
 // ─── Simulation ───────────────────────────────────────────────────────────────
-function simulate(p) {
+function simulate(p, sampleReturns) {
   const {
     startAge, moveYear, endAge,
     investments, retirement, cash, otherAssets, homeProceedsNet,
@@ -96,14 +96,18 @@ function simulate(p) {
     consulting, consultingStop,
     taxWindowYrs, rothConversionAmt,
     homeBuyAge, homeBuyAmt,
-    rothFrac,
+    rothFrac, cgRate,
   } = p;
 
+  let cashB = cash + otherAssets;                       // liquid — tax-free to spend
   let homeP = investments * (1 - destAllocFrac)
-            + homeProceedsNet * (1 - homeProceedsDestFrac)
-            + cash + otherAssets;
+            + homeProceedsNet * (1 - homeProceedsDestFrac);
   let destP = investments * destAllocFrac
             + homeProceedsNet * homeProceedsDestFrac;
+  // Cost basis for the taxable sleeves. Assume no embedded gains at the move date
+  // (home-sale proceeds already had CGT applied at sale); gains accrue via growth.
+  let homeBasis = homeP;
+  let destBasis = destP;
   let roth  = retirement * rothFrac;
   let trad  = retirement * (1 - rothFrac);
 
@@ -119,38 +123,78 @@ function simulate(p) {
 
     const consultIncome = age < consultingStop
       ? consulting * Math.pow(1.03, Math.min(yr, 5)) : 0;
-    const netDraw    = Math.max(0, expenses - consultIncome);
-    const taxRate    = isWindow ? 0.18 : 0.26;
-    const grossDraw  = netDraw > 0 ? netDraw / (1 - taxRate) : 0;
-    const taxPaid    = grossDraw - netDraw;
 
-    let convTax = 0;
+    const ordinaryRate = isWindow ? 0.18 : 0.26;          // effective rate on tax-deferred draws
+    const soyTotal = cashB + homeP + destP + roth + trad; // start-of-year net worth (4%-rule denominator)
+
+    // Roth/tax-free conversion during the tax window. Conversion tax paid from cash, then taxable.
+    let convTax = 0, convSaving = 0;
     if (isWindow && trad > 0 && rothConversionAmt > 0) {
       const conv = Math.min(rothConversionAmt, trad);
-      convTax = conv * 0.22;
-      trad -= conv; roth += conv; homeP = Math.max(0, homeP - convTax);
+      convTax    = conv * 0.22;
+      convSaving = Math.max(0, conv * (0.26 - 0.22));      // vs. ordinary rate on a later draw
+      trad -= conv; roth += conv;
+      const fromCash = Math.min(cashB, convTax); cashB -= fromCash;
+      let left = convTax - fromCash;
+      if (left > 0 && homeP > 0) { const d = Math.min(homeP, left); const b = homeBasis * (d / homeP); homeP -= d; homeBasis = Math.max(0, homeBasis - b); left -= d; }
     }
 
+    // Destination home purchase — pulled from destination sleeve, then home.
     if (age === homeBuyAge) {
-      if (destP >= homeBuyAmt) destP -= homeBuyAmt;
-      else { homeP -= (homeBuyAmt - destP); destP = 0; }
+      if (destP >= homeBuyAmt) { const b = destP > 0 ? destBasis * (homeBuyAmt / destP) : 0; destP -= homeBuyAmt; destBasis = Math.max(0, destBasis - b); }
+      else {
+        const fromDest = destP; destP = 0; destBasis = 0;
+        const fromHome = Math.min(homeP, homeBuyAmt - fromDest);
+        const b = homeP > 0 ? homeBasis * (fromHome / homeP) : 0; homeP -= fromHome; homeBasis = Math.max(0, homeBasis - b);
+      }
     }
 
-    let rem = grossDraw;
-    if (rem > 0 && homeP > 0) { const d = Math.min(rem, homeP); homeP -= d; rem -= d; }
-    if (rem > 0 && destP > 0) { const d = Math.min(rem, destP); destP -= d; rem -= d; }
-    if (rem > 0 && age >= 59.5) {
-      const avail = roth + trad, d = Math.min(rem, avail);
-      const fr = Math.min(d, roth); roth -= fr; trad -= Math.max(0, d - fr); rem -= d;
+    // ── Fund spending (net of part-time income) from accessible assets ─────────
+    let need = Math.max(0, expenses - consultIncome);      // cash the person actually needs
+    let taxSpend = 0, grossWithdrawn = 0;
+    // 1) Cash — tax-free
+    if (need > 0 && cashB > 0) { const d = Math.min(need, cashB); cashB -= d; need -= d; grossWithdrawn += d; }
+    // 2) Home taxable — tax only the gain fraction at the capital-gains rate
+    if (need > 0 && homeP > 0) {
+      const rate  = cgRate * Math.max(0, homeP - homeBasis) / homeP;
+      const gross = Math.min(homeP, need / (1 - rate));
+      homeBasis   = Math.max(0, homeBasis - homeBasis * (gross / homeP)); homeP -= gross;
+      need -= gross * (1 - rate); taxSpend += gross * rate; grossWithdrawn += gross;
     }
+    // 3) Destination taxable
+    if (need > 0 && destP > 0) {
+      const rate  = cgRate * Math.max(0, destP - destBasis) / destP;
+      const gross = Math.min(destP, need / (1 - rate));
+      destBasis   = Math.max(0, destBasis - destBasis * (gross / destP)); destP -= gross;
+      need -= gross * (1 - rate); taxSpend += gross * rate; grossWithdrawn += gross;
+    }
+    // 4) Retirement (penalty-free at 59½): Roth first (tax-free), then Traditional (ordinary rate)
+    if (need > 0 && age >= 59.5 && roth > 0) { const d = Math.min(need, roth); roth -= d; need -= d; grossWithdrawn += d; }
+    if (need > 0 && age >= 59.5 && trad > 0) {
+      const gross = Math.min(trad, need / (1 - ordinaryRate));
+      trad -= gross; need -= gross * (1 - ordinaryRate); taxSpend += gross * ordinaryRate; grossWithdrawn += gross;
+    }
+    const shortfall = need;                                // spending that could NOT be funded — real insolvency
 
-    homeP = Math.max(0, homeP) * (1 + homeReturn);
-    destP = Math.max(0, destP) * (1 + destReturn);
-    roth  = roth * (1 + homeReturn);
-    trad  = trad * (1 + homeReturn);
+    // Reinvest part-time income above expenses into the home taxable sleeve.
+    const surplus = Math.max(0, consultIncome - expenses);
+    if (surplus > 0) { homeP += surplus; homeBasis += surplus; }
+
+    // ── Growth (returns may be sampled per-year for Monte Carlo) ────────────────
+    const rr = sampleReturns ? sampleReturns(yr) : null;
+    const hr = rr ? rr.home : homeReturn;
+    const dr = rr ? rr.dest : destReturn;
+    cashB = Math.max(0, cashB) * (1 + hr);
+    homeP = Math.max(0, homeP) * (1 + hr); homeBasis = Math.min(homeBasis, homeP);
+    destP = Math.max(0, destP) * (1 + dr); destBasis = Math.min(destBasis, destP);
+    roth  = roth * (1 + hr);
+    trad  = trad * (1 + hr);
 
     const retTotal = roth + trad;
-    const total    = homeP + destP + retTotal;
+    const homeSleeve = homeP + cashB;                      // cash shown within the home-country sleeve
+    const total    = homeSleeve + destP + retTotal;
+    const taxPaid  = taxSpend + convTax;
+    const netDrawFunded = Math.max(0, Math.max(0, expenses - consultIncome) - shortfall);
     rows.push({
       age, year,
       label:        `${age}·'${String(year).slice(2)}`,
@@ -158,19 +202,101 @@ function simulate(p) {
       lifestyle:    Math.round(lifestyleExp),
       healthcare:   Math.round(healthcareExp),
       consulting:   Math.round(consultIncome),
-      netDraw:      Math.round(netDraw),
-      taxPaid:      Math.round(taxPaid + convTax),
-      homeP:        Math.round(homeP / 1e4) / 100,
+      netDraw:      Math.round(netDrawFunded),
+      taxPaid:      Math.round(taxPaid),
+      convSaving:   Math.round(convSaving),
+      shortfall:    Math.round(shortfall),
+      homeP:        Math.round(homeSleeve / 1e4) / 100,
       destP:        Math.round(destP / 1e4) / 100,
       retirement:   Math.round(retTotal / 1e4) / 100,
       total:        Math.round(total / 1e4) / 100,
       isWindow,
       surplus:      Math.round(consultIncome - expenses),
-      drawPct:      total > 0 ? ((netDraw / total) * 100).toFixed(2) : "0",
+      drawPct:      soyTotal > 0 ? ((grossWithdrawn / soyTotal) * 100).toFixed(2) : "0",
     });
   }
   return rows;
 }
+
+// ─── Monte Carlo ──────────────────────────────────────────────────────────────
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function gaussian(rng) {                         // Box–Muller standard normal
+  let u = 0, v = 0;
+  while (u === 0) u = rng();
+  while (v === 0) v = rng();
+  return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v);
+}
+function percentile(sorted, p) {
+  if (!sorted.length) return 0;
+  const idx = (sorted.length - 1) * p;
+  const lo = Math.floor(idx), hi = Math.ceil(idx);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo);
+}
+// Runs `trials` projections with normally-distributed annual returns around the
+// mean, then reduces to per-year percentile bands and a success rate.
+function runMonteCarlo(params, trials, homeVol, destVol) {
+  const N = params.endAge - params.startAge + 1;
+  const perYear = Array.from({ length: N }, () => []);
+  const finals = [];
+  let successes = 0;
+  for (let t = 0; t < trials; t++) {
+    const rng = mulberry32((0x9E3779B9 ^ (t * 2654435761)) >>> 0); // fixed seed → stable, reproducible
+    const rows = simulate(params, () => ({
+      home: Math.max(-0.95, params.homeReturn + gaussian(rng) * homeVol),
+      dest: Math.max(-0.95, params.destReturn + gaussian(rng) * destVol),
+    }));
+    let failed = false;
+    for (let i = 0; i < N; i++) {
+      perYear[i].push(rows[i].total);
+      if (rows[i].shortfall > 0) failed = true;
+    }
+    if (!failed) successes++;
+    finals.push(rows[N - 1].total);
+  }
+  const bands = perYear.map((vals, i) => {
+    const s = vals.slice().sort((a, b) => a - b);
+    const p10 = percentile(s, 0.10), p25 = percentile(s, 0.25),
+          p50 = percentile(s, 0.50), p75 = percentile(s, 0.75),
+          p90 = percentile(s, 0.90);
+    return { age: params.startAge + i, band: [p10, p90], bandInner: [p25, p75], p10, p25, p50, p75, p90 };
+  });
+  const fin = finals.slice().sort((a, b) => a - b);
+  return {
+    bands, trials,
+    successRate: successes / trials,
+    finalP10: percentile(fin, 0.10),
+    finalP50: percentile(fin, 0.50),
+    finalP90: percentile(fin, 0.90),
+  };
+}
+const MCTip = ({ active, payload, label, moveYear, startAge }) => {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  const year = moveYear + (Number(label) - startAge);
+  const Row = (name, val, col) => (
+    <div style={{ display:'flex', justifyContent:'space-between', gap:16, marginBottom:2 }}>
+      <span style={{ color: col }}>{name}</span>
+      <span style={{ color: C.text, fontFamily:"'JetBrains Mono',monospace" }}>${val.toFixed(2)}M</span>
+    </div>
+  );
+  return (
+    <div style={{ background:'#0D1520', border:`1px solid ${C.border}`, borderRadius:8, padding:'10px 13px', fontSize:11 }}>
+      <div style={{ color:C.gold, marginBottom:6, fontFamily:"'Playfair Display',serif", fontSize:14, fontWeight:600 }}>Age {label} · {year}</div>
+      {Row('90th pctile', d.p90, C.sage)}
+      {Row('75th', d.p75, C.teal)}
+      {Row('Median', d.p50, C.gold)}
+      {Row('25th', d.p25, C.teal)}
+      {Row('10th pctile', d.p10, C.coral)}
+    </div>
+  );
+};
 
 // ─── UI Atoms ─────────────────────────────────────────────────────────────────
 const SectionHead = ({ children }) => (
@@ -258,6 +384,11 @@ const fmtK = v => v >= 1000 ? `$${(v/1000).toFixed(0)}k` : `$${Math.round(v)}`;
 function App() {
   const [tab, setTab] = useState('portfolio');
 
+  // Monte Carlo
+  const [mcTrials, setMcTrials] = useState(500);
+  const [homeVol,  setHomeVol]  = useState(0.12);
+  const [destVol,  setDestVol]  = useState(0.15);
+
   // Identity
   const [currentAge,  setCurrentAge]  = useState(25);
   const [moveYear,    setMoveYear]     = useState(2024);
@@ -320,7 +451,7 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
     baseExpenses, baseHealthcare, healthMult,
     consulting, consultingStop,
     taxWindowYrs, rothConversionAmt,
-    homeBuyAge, homeBuyAmt, rothFrac,
+    homeBuyAge, homeBuyAmt, rothFrac, cgRate,
   };
 
   const data = useMemo(() => simulate(params), [JSON.stringify(params)]);
@@ -331,10 +462,15 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
     optimistic:   simulate({ ...params, homeReturn: Math.min(0.14, homeReturn + 0.02), destReturn: Math.min(0.16, destReturn + 0.03), destInflation: Math.max(0.02, destInflation - 0.02), consulting: Math.max(consulting, 40_000), healthMult: Math.max(1.0, healthMult - 0.5) }),
   }), [JSON.stringify(params)]);
 
+  const mc = useMemo(
+    () => tab === 'montecarlo' ? runMonteCarlo(params, mcTrials, homeVol, destVol) : null,
+    [tab, JSON.stringify(params), mcTrials, homeVol, destVol]
+  );
+
   const peakRow  = data.reduce((a,b) => b.total > a.total ? b : a, data[0]);
   const at60     = data.find(d => d.age === 60);
   const at70     = data.find(d => d.age === 70);
-  const depleted = data.find(d => d.total <= 0)?.age ?? null;
+  const depleted = data.find(d => d.shortfall > 0 || d.total <= 0)?.age ?? null;
   const totalTax = data.reduce((s,d) => s + d.taxPaid, 0);
   const startTotal = investments + retirement + cash + otherAssets + capGains.net;
 
@@ -342,7 +478,7 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
   const cashflowD   = data.filter(d => d.age % 2 === 0).map(d => ({ age:d.age, Lifestyle:d.lifestyle, Healthcare:d.healthcare, Consulting:d.consulting, 'Portfolio Draw':d.netDraw, Tax:d.taxPaid }));
   const healthD     = data.map(d => ({ age:d.age, Healthcare:d.healthcare, Lifestyle:d.lifestyle }));
   const surplusD    = data.map(d => ({ age:d.age, value:d.consulting - d.expenses, pos:d.consulting >= d.expenses }));
-  const taxD        = data.filter(d => d.age <= Math.min(currentAge + 30, endAge)).map(d => ({ age:d.age, 'Tax Paid':d.taxPaid, 'Window Saving':d.isWindow ? d.taxPaid * 0.35 : 0 }));
+  const taxD        = data.filter(d => d.age <= Math.min(currentAge + 30, endAge)).map(d => ({ age:d.age, 'Tax Paid':d.taxPaid, 'Window Saving':d.convSaving }));
   const scenD       = data.map((d,i) => ({ age:d.age, Conservative:scenarios.conservative[i]?.total??0, Moderate:scenarios.moderate[i]?.total??0, Optimistic:scenarios.optimistic[i]?.total??0 }));
 
   const XAP = { stroke:C.muted, tick:{ fontSize:10 }, tickFormatter: v => `${v}·'${String(yr(v)).slice(2)}` };
@@ -590,7 +726,8 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
               border:`1px solid ${C.border}`, borderRadius:8, padding:3, width:'fit-content',
               overflowX:'auto' }}>
               {[['portfolio','Portfolio'],['cashflow','Cashflow'],['healthcare','Healthcare'],
-                ['allocation','Allocation'],['tax','Tax'],['scenarios','Scenarios']].map(([id,lbl]) => (
+                ['allocation','Allocation'],['tax','Tax'],['scenarios','Scenarios'],
+                ['montecarlo','Monte Carlo']].map(([id,lbl]) => (
                 <Tab key={id} label={lbl} active={tab===id} onClick={() => setTab(id)} />
               ))}
             </div>
@@ -903,9 +1040,9 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
                           scenarios.optimistic.find(d=>d.age===70)   ? fmtM(scenarios.optimistic.find(d=>d.age===70).total)   : 'N/A',
                         ], bold:true},
                         {l:'Depleted at',    v:[
-                          scenarios.conservative.find(d=>d.total<=0)?.age ? `Age ${scenarios.conservative.find(d=>d.total<=0).age}` : 'Never',
+                          scenarios.conservative.find(d=>d.shortfall>0||d.total<=0)?.age ? `Age ${scenarios.conservative.find(d=>d.shortfall>0||d.total<=0).age}` : 'Never',
                           depleted ? `Age ${depleted}` : 'Never',
-                          scenarios.optimistic.find(d=>d.total<=0)?.age ? `Age ${scenarios.optimistic.find(d=>d.total<=0).age}` : 'Never',
+                          scenarios.optimistic.find(d=>d.shortfall>0||d.total<=0)?.age ? `Age ${scenarios.optimistic.find(d=>d.shortfall>0||d.total<=0).age}` : 'Never',
                         ], bold:true},
                       ].map(({l,v,bold})=>(
                         <tr key={l} style={{borderBottom:`1px solid ${C.border}20`}}>
@@ -921,6 +1058,82 @@ const yr = useCallback(age => moveYear + (age - currentAge), [moveYear, currentA
                       ))}
                     </tbody>
                   </table>
+                </div>
+              )}
+
+              {/* MONTE CARLO */}
+              {tab==='montecarlo' && (
+                <div>
+                  <h3 style={{fontFamily:"'Playfair Display',serif",fontSize:22,margin:'0 0 4px'}}>
+                    Monte Carlo Simulation
+                  </h3>
+                  <p style={{fontSize:12,color:C.muted,margin:'0 0 16px'}}>
+                    {mcTrials.toLocaleString()} randomized trials · annual returns drawn from a normal distribution
+                    around your mean returns (inflation held fixed). Shaded = 10–90th & 25–75th percentile net-worth
+                    range · line = median · <strong style={{color:C.text}}>Success</strong> = never runs short of
+                    spendable funds through age {endAge}.
+                  </p>
+
+                  <div style={{display:'flex',gap:18,flexWrap:'wrap',alignItems:'flex-end',marginBottom:14,
+                    background:'#060A10',border:`1px solid ${C.border}`,borderRadius:8,padding:'12px 14px'}}>
+                    <div style={{minWidth:150}}>
+                      <div style={{fontSize:10,color:C.muted,textTransform:'uppercase',letterSpacing:'0.07em',marginBottom:6}}>Trials</div>
+                      <select value={mcTrials} onChange={e=>setMcTrials(Number(e.target.value))}>
+                        {[200,500,1000,2000,5000].map(n=><option key={n} value={n}>{n.toLocaleString()}</option>)}
+                      </select>
+                    </div>
+                    <div style={{minWidth:210,flex:1}}>
+                      <Slider label="Home Return Volatility σ" value={homeVol} min={0} max={0.30} step={0.01}
+                        fmt={v=>`${(v*100).toFixed(0)}%`} onChange={setHomeVol}
+                        hint="Std-dev of annual home-market return (equities ≈ 12–18%)" />
+                    </div>
+                    <div style={{minWidth:210,flex:1}}>
+                      <Slider label="Destination Return Volatility σ" value={destVol} min={0} max={0.35} step={0.01}
+                        fmt={v=>`${(v*100).toFixed(0)}%`} onChange={setDestVol} color={C.teal}
+                        hint="Emerging destination markets are often more volatile" />
+                    </div>
+                  </div>
+
+                  {mc && (
+                    <div>
+                      <div style={{display:'flex',gap:10,marginBottom:14,flexWrap:'wrap'}}>
+                        <KPICard label="Success Rate" value={`${(mc.successRate*100).toFixed(0)}%`}
+                          sub={`${mcTrials.toLocaleString()} trials · funded to ${endAge}`}
+                          color={mc.successRate>=0.9?C.sage:mc.successRate>=0.75?C.gold:C.coral} accent />
+                        <KPICard label="Median Ending Net Worth" value={fmtM(mc.finalP50)} sub={`Age ${endAge}`} color={C.gold} />
+                        <KPICard label="10th Pctile · Bad Case" value={fmtM(mc.finalP10)} sub="1-in-10 downside" color={C.coral} />
+                        <KPICard label="90th Pctile · Good Case" value={fmtM(mc.finalP90)} sub="1-in-10 upside" color={C.teal} />
+                      </div>
+
+                      <ResponsiveContainer width="100%" height={330}>
+                        <ComposedChart data={mc.bands} margin={{top:10,right:20,bottom:0,left:10}}>
+                          <defs>
+                            <linearGradient id="mcOuter" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="5%"  stopColor={C.teal} stopOpacity={0.16}/>
+                              <stop offset="95%" stopColor={C.teal} stopOpacity={0.02}/>
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid {...GRID_STYLE}/>
+                          <XAxis dataKey="age" {...XAP}/>
+                          <YAxis stroke={C.muted} tick={{fontSize:11}} tickFormatter={v=>`$${v}M`}/>
+                          <Tooltip content={(pr)=> <MCTip {...pr} moveYear={moveYear} startAge={currentAge} />}/>
+                          <Legend wrapperStyle={LEG_STYLE}/>
+                          <ReferenceLine x={59} stroke={C.lavender+'70'} strokeDasharray="4 4" label={{value:'59½',fill:C.lavender+'99',fontSize:10}}/>
+                          <ReferenceLine x={currentAge+taxWindowYrs} stroke={C.gold+'55'} strokeDasharray="5 3" label={{value:'Window end',fill:C.gold+'88',fontSize:9}}/>
+                          <Area dataKey="band"      name="10–90%" stroke="none" fill="url(#mcOuter)"/>
+                          <Area dataKey="bandInner" name="25–75%" stroke="none" fill={C.teal} fillOpacity={0.20}/>
+                          <Line dataKey="p50"       name="Median" stroke={C.gold} strokeWidth={2.5} dot={false}/>
+                        </ComposedChart>
+                      </ResponsiveContainer>
+
+                      <InfoBox color={mc.successRate>=0.9?C.sage:C.coral} icon={mc.successRate>=0.9?'✓':'⚠'}
+                        title={`${(mc.successRate*100).toFixed(0)}% of ${mcTrials.toLocaleString()} trials survived`}>
+                        {mc.successRate>=0.9
+                          ? `Across ${mcTrials.toLocaleString()} random return sequences, the plan funds expenses through age ${endAge} in ${(mc.successRate*100).toFixed(0)}% of cases. Sequence-of-returns risk is well covered at these settings.`
+                          : `Only ${(mc.successRate*100).toFixed(0)}% of trials stayed funded through age ${endAge}. A poor run of early returns (sequence-of-returns risk) can drain accessible funds before 59½. Consider lower expenses, a larger cash buffer, more destination/home diversification, or working longer. Note the median ending net worth is typically below the fixed-return projection because volatility drag and withdrawals compound against you.`}
+                      </InfoBox>
+                    </div>
+                  )}
                 </div>
               )}
 
